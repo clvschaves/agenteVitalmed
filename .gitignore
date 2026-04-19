@@ -1,0 +1,32 @@
+**/uploads/**
+!uploads/.gitkeep
+**/__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+*.log
+
+# Memória dos leads (dados sensíveis)
+src/memory/palace/leads/
+
+# Modelos Whisper (grandes)
+*.pt
+
+# Alembic (config local)
+alembic.ini
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+*.swp

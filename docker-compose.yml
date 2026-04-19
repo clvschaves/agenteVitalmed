@@ -1,0 +1,121 @@
+version: "3.9"
+
+services:
+  # ─── FastAPI (Gateway + Worker) ──────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vitalmed_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://vitalmed:vitalmed123@postgres:5432/vitalmed_db
+      - DATABASE_URL_SYNC=postgresql://vitalmed:vitalmed123@postgres:5432/vitalmed_db
+      - REDIS_URL=redis://redis:6379/0
+      - LANGFUSE_HOST=http://langfuse:3000
+    volumes:
+      - ./uploads:/app/uploads
+      - ./src/memory/palace:/app/src/memory/palace
+      - ./docs:/app/docs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn src.gateway.main:app --host 0.0.0.0 --port 8000 --workers 4
+
+  # ─── Streamlit (Admin RAG + Simulador) ────────────────────────────────────
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vitalmed_streamlit
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://vitalmed:vitalmed123@postgres:5432/vitalmed_db
+      - DATABASE_URL_SYNC=postgresql://vitalmed:vitalmed123@postgres:5432/vitalmed_db
+      - REDIS_URL=redis://redis:6379/0
+      - API_URL=http://api:8000
+    volumes:
+      - ./uploads:/app/uploads
+      - ./docs:/app/docs
+    depends_on:
+      - api
+    command: streamlit run tests/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+
+  # ─── PostgreSQL + pgvector ────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vitalmed_postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"   # Porta alternativa — evita conflito com outros projetos
+    environment:
+      POSTGRES_USER: vitalmed
+      POSTGRES_PASSWORD: vitalmed123
+      POSTGRES_DB: vitalmed_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vitalmed -d vitalmed_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: vitalmed_redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"   # Porta alternativa — evita conflito com outros projetos
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── Langfuse (Observabilidade self-hosted) ────────────────────────────────
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: vitalmed_langfuse
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://vitalmed:vitalmed123@langfuse_db:5432/langfuse_db
+      NEXTAUTH_SECRET: super-secret-langfuse-key-change-this
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: some-random-salt-change-this
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      langfuse_db:
+        condition: service_healthy
+
+  langfuse_db:
+    image: postgres:16-alpine
+    container_name: vitalmed_langfuse_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vitalmed
+      POSTGRES_PASSWORD: vitalmed123
+      POSTGRES_DB: langfuse_db
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vitalmed -d langfuse_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  langfuse_db_data:
