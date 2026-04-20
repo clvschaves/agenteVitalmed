@@ -62,6 +62,13 @@ def _test_service(url: str, path: str = "/health") -> bool:
 
 
 # ─── Ambientes pré-definidos ──────────────────────────────────────────────────
+# Detecta se está rodando DENTRO do Docker no servidor (API_URL injetada pelo compose)
+_DOCKER_API_URL = os.environ.get("API_URL", "")
+_DOCKER_DB_URL = (
+    os.environ.get("DATABASE_URL_SYNC", "")
+    or os.environ.get("DATABASE_URL", "").replace("+asyncpg", "")
+)
+
 ENVIRONMENTS = {
     "🏠 Local (docker-compose)": {
         "api_url": "http://localhost:8000",
@@ -83,16 +90,34 @@ ENVIRONMENTS = {
 
 # Inicializa ambiente na sessão (só uma vez)
 if "env_name" not in st.session_state:
-    _auto_env = "💻 Local sem banco (só memória/agentes)"
-    for _name, _cfg in ENVIRONMENTS.items():
-        if _name == "⚙️ Custom":
-            continue
-        if _test_service(_cfg["api_url"]):
-            _auto_env = _name
-            break
+    # Se estiver dentro do Docker no servidor, usa as variáveis de ambiente
+    if _DOCKER_API_URL and "api" in _DOCKER_API_URL:
+        # Rodando no servidor via docker-compose
+        _auto_env = "🚀 Servidor (37.27.208.115)"
+        _auto_api = _DOCKER_API_URL
+        _auto_db = _DOCKER_DB_URL
+    else:
+        # Rodando localmente — detecta qual ambiente responde
+        _auto_env = "💻 Local sem banco (só memória/agentes)"
+        _auto_api = ENVIRONMENTS[_auto_env]["api_url"]
+        _auto_db = ""
+        for _name, _cfg in ENVIRONMENTS.items():
+            if _name == "⚙️ Custom":
+                continue
+            if _test_service(_cfg["api_url"]):
+                _auto_env = _name
+                _auto_api = _cfg["api_url"]
+                _auto_db = _cfg["db_url"]
+                break
+
     st.session_state["env_name"] = _auto_env
-    st.session_state["api_url"] = ENVIRONMENTS[_auto_env]["api_url"]
-    st.session_state["db_url_override"] = ENVIRONMENTS[_auto_env]["db_url"]
+    st.session_state["api_url"] = _auto_api
+    st.session_state["db_url_override"] = _auto_db
+    # No servidor, sobrescreve o preset com a URL interna real
+    if _DOCKER_API_URL:
+        ENVIRONMENTS["🚀 Servidor (37.27.208.115)"]["api_url"] = _DOCKER_API_URL
+    if _DOCKER_DB_URL:
+        ENVIRONMENTS["🚀 Servidor (37.27.208.115)"]["db_url"] = _DOCKER_DB_URL
 
 # Detecta DB
 if "db_available" not in st.session_state:
