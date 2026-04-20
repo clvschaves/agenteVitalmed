@@ -62,6 +62,7 @@ async def receive_message(
         "created_at": datetime.utcnow().isoformat(),
         "session_id": session_id,
         "lead_phone": payload.phone,
+        "chatwoot_conversation_id": payload.chatwoot_conversation_id or "",  # ← persistido aqui
     }
 
     from src.core.config import settings

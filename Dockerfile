@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar dependências Python
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir -e .
 
 # Copiar código

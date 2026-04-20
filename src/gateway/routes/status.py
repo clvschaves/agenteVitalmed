@@ -23,6 +23,7 @@ class JobStatusResponse(BaseModel):
     agent_used: str | None = None
     tools_called: list[str] = []
     session_id: str | None = None
+    chatwoot_conversation_id: str | None = None  # ← sempre retornado para rastreamento
 
 
 @router.get("/status/{job_id}", response_model=JobStatusResponse)
@@ -60,4 +61,6 @@ async def get_job_status(job_id: str, redis=Depends(get_redis)):
         agent_used=job_data.get("agent_used") or None,
         tools_called=tools_called,
         session_id=job_data.get("session_id") or None,
+        chatwoot_conversation_id=job_data.get("chatwoot_conversation_id") or None,
     )
+

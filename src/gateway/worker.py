@@ -142,9 +142,9 @@ async def process_message_job(
 
         def _run_sales(use_flash: bool = False):
             agent = create_sales_agent(fallback_flash=use_flash)
-            # agno 2.5.17: parâmetro é 'input' (não 'message')
+            # agno 1.2.6 local: parâmetro é 'message' (versão servidor usa 'input')
             return agent.run(
-                input=full_message,
+                message=full_message,
                 session_id=session_id,
                 user_id=phone,
             )
@@ -209,10 +209,16 @@ async def process_message_job(
             await ltm.update_profile(**profile_fields)
 
         # hall_facts — registra quando tools de interesse/fechamento foram chamadas
+        import re
         for tool in tools_called:
-            if "interested" in tool or "closed" in tool:
+            tool_str = str(tool)
+            # Extrai tool_name do objeto ToolExecution serializado
+            match = re.search(r"tool_name='([^']+)'", tool_str)
+            tool_name = match.group(1) if match else tool_str[:50]
+            if any(k in tool_name for k in ["interested", "closed", "mark_lead"]):
+                plan = lead_profile.get("interested_plan") or "nao definido"
                 await ltm.append_fact(
-                    fact=f"{tool} chamada — plano: {lead_profile.get('interested_plan', '?')}"
+                    fact=f"Tool '{tool_name}' executada — plano: {plan}"
                 )
 
         # hall_preferences — detecta objeções e preferências no texto do lead
@@ -239,6 +245,10 @@ async def process_message_job(
         logger.info(f"✅ Job {job_id} | phone={phone} | agent={agent_used} | tokens={input_tokens}+{output_tokens}")
 
         # ─── 9. Enviar resposta ao n8n webhook (Chatwoot/WhatsApp) ────────
+        logger.info(
+            f"📤 Enviando ao n8n | phone={phone} | "
+            f"chatwoot_conversation_id={chatwoot_conversation_id!r}"
+        )
         await _send_to_n8n_webhook(
             phone=phone,
             name=name,
