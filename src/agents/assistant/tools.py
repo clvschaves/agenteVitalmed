@@ -2,10 +2,11 @@ from __future__ import annotations
 """
 Tools do AssistantAgent — operações de banco, Chatwoot e memória.
 
-IMPORTANTE: O Agno 1.2.x chama tools de forma SÍNCRONA.
-Todas as tools aqui são síncronas e usam asyncio internamente.
+IMPORTANTE: O Agno 1.2.x chama tools de forma SÍNCRONA via ThreadPoolExecutor.
+            Usar asyncio.run() dentro de thread causa conflito com o loop do uvicorn
+            (asyncpg connections pertencem ao loop principal).
+            SOLUÇÃO: usar SyncSessionLocal (psycopg2) — totalmente síncrono, sem loop.
 """
-import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -13,43 +14,38 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
-def _run(coro):
-    """
-    Helper: executa coroutine de forma sincrona dentro de thread do agno.
-
-    O agno 2.5.x executa tools via ThreadPoolExecutor — threads sem event loop.
-    asyncio.run() cria um novo event loop na thread (solucao correta para Python 3.10+).
-    """
-    try:
-        return asyncio.run(coro)
-    except Exception as e:
-        logger.error(f"Erro em _run: {e}")
-        raise
+# ─── Sessão síncrona — usada por TODAS as tools ──────────────────────────────
+def _get_sync_db():
+    """Retorna uma sessão síncrona (psycopg2). Deve ser fechada pelo chamador."""
+    from src.db.session import SyncSessionLocal
+    return SyncSessionLocal()
 
 
 def get_lead_profile(phone: str) -> dict:
     """Busca o perfil completo do lead no banco de dados."""
-    async def _impl():
-        from src.db.session import AsyncSessionLocal
-        from src.db.models import Lead
-        from sqlalchemy import select
+    from src.db.models import Lead
+    from sqlalchemy import select
 
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Lead).where(Lead.phone == phone))
-            lead = result.scalar_one_or_none()
-            if not lead:
-                return {"phone": phone, "status": "novo"}
-            return {
-                "phone": lead.phone,
-                "name": lead.name,
-                "email": lead.email,
-                "age": lead.age,
-                "status": lead.status,
-                "interested_plan": lead.interested_plan,
-                "source": lead.source,
-                "last_contact_at": str(lead.last_contact_at),
-            }
-    return _run(_impl())
+    db = _get_sync_db()
+    try:
+        lead = db.execute(select(Lead).where(Lead.phone == phone)).scalar_one_or_none()
+        if not lead:
+            return {"phone": phone, "status": "novo"}
+        return {
+            "phone": lead.phone,
+            "name": lead.name,
+            "email": lead.email,
+            "age": lead.age,
+            "status": lead.status,
+            "interested_plan": lead.interested_plan,
+            "source": lead.source,
+            "last_contact_at": str(lead.last_contact_at),
+        }
+    except Exception as e:
+        logger.error(f"get_lead_profile error: {e}")
+        return {"phone": phone, "status": "novo"}
+    finally:
+        db.close()
 
 
 def update_lead_status(phone: str, new_status: str, reason: str = "") -> bool:
@@ -58,65 +54,68 @@ def update_lead_status(phone: str, new_status: str, reason: str = "") -> bool:
     Statuses válidos: novo, contactado, sem_retorno, em_atendimento,
                       escalado, interessado, fechado, nao_interessado, perdido
     """
-    async def _impl():
-        from src.db.session import AsyncSessionLocal
-        from src.db.models import Lead, LeadStatusHistory
-        from sqlalchemy import select
+    from src.db.models import Lead, LeadStatusHistory
+    from sqlalchemy import select
 
-        VALID_STATUSES = {
-            "novo", "contactado", "sem_retorno", "em_atendimento",
-            "escalado", "interessado", "fechado", "nao_interessado", "perdido"
-        }
-        if new_status not in VALID_STATUSES:
-            logger.warning(f"Status inválido: {new_status}")
+    VALID_STATUSES = {
+        "novo", "contactado", "sem_retorno", "em_atendimento",
+        "escalado", "interessado", "fechado", "nao_interessado", "perdido"
+    }
+    if new_status not in VALID_STATUSES:
+        logger.warning(f"Status inválido: {new_status}")
+        return False
+
+    db = _get_sync_db()
+    try:
+        lead = db.execute(select(Lead).where(Lead.phone == phone)).scalar_one_or_none()
+        if not lead:
             return False
 
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Lead).where(Lead.phone == phone))
-            lead = result.scalar_one_or_none()
-            if not lead:
-                return False
+        old_status = lead.status
+        lead.status = new_status
+        lead.updated_at = datetime.utcnow()
 
-            old_status = lead.status
-            lead.status = new_status
-            lead.updated_at = datetime.utcnow()
-
-            history = LeadStatusHistory(
-                id=uuid.uuid4(),
-                lead_id=lead.id,
-                old_status=old_status,
-                new_status=new_status,
-                reason=reason,
-            )
-            db.add(history)
-            await db.commit()
+        history = LeadStatusHistory(
+            id=uuid.uuid4(),
+            lead_id=lead.id,
+            old_status=str(old_status),
+            new_status=new_status,
+            reason=reason,
+        )
+        db.add(history)
+        db.commit()
 
         logger.info(f"📊 Status: {phone} | {old_status} → {new_status}")
         return True
-
-    return _run(_impl())
+    except Exception as e:
+        db.rollback()
+        logger.error(f"update_lead_status error: {e}")
+        return False
+    finally:
+        db.close()
 
 
 def save_lead_interest(phone: str, plan: str) -> bool:
     """Registra o plano de interesse do lead no banco."""
-    async def _impl():
-        from src.db.session import AsyncSessionLocal
-        from src.db.models import Lead
-        from sqlalchemy import select
+    from src.db.models import Lead
+    from sqlalchemy import select
 
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Lead).where(Lead.phone == phone))
-            lead = result.scalar_one_or_none()
-            if not lead:
-                return False
-            lead.interested_plan = plan
-            lead.updated_at = datetime.utcnow()
-            await db.commit()
-
+    db = _get_sync_db()
+    try:
+        lead = db.execute(select(Lead).where(Lead.phone == phone)).scalar_one_or_none()
+        if not lead:
+            return False
+        lead.interested_plan = plan
+        lead.updated_at = datetime.utcnow()
+        db.commit()
         logger.info(f"⭐ Interesse: {phone} → {plan}")
         return True
-
-    return _run(_impl())
+    except Exception as e:
+        db.rollback()
+        logger.error(f"save_lead_interest error: {e}")
+        return False
+    finally:
+        db.close()
 
 
 def transfer_to_human(phone: str, reason: str) -> str:
