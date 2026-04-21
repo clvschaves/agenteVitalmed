@@ -138,12 +138,26 @@ async def process_message_job(
         if recent_history:
             history_section = "\n\n## Histórico Recente da Conversa\n" + recent_history
 
+        # ─── Sanity check: mensagem não pode ser vazia ─────────────────────
+        # O Gemini rejeita chamadas com contents=[]
+        if not message or not message.strip():
+            logger.warning(f"⚠️ Mensagem vazia recebida do lead {phone} — ignorando job {job_id}")
+            await redis.hset(
+                f"job:{job_id}",
+                mapping={"status": "done", "response": ""}
+            )
+            return
+
         full_message = (
             f"{context_prefix}"
             f"{history_section}"
             f"{rag_section}"
-            f"\n\n**Mensagem atual do lead:**\n{message}"
-        )
+            f"\n\n**Mensagem atual do lead:**\n{message.strip()}"
+        ).strip()
+
+        # Fallback final — nunca deve acontecer, mas garante que a string não é vazia
+        if not full_message:
+            full_message = message.strip() or "Olá"
 
         # ─── 4. Enviar para o SalesAgent (Gemini Pro — vendas) ────────────
         from src.agents.sales.agent import create_sales_agent
@@ -153,9 +167,8 @@ async def process_message_job(
 
         def _run_sales(use_flash: bool = False):
             agent = create_sales_agent(fallback_flash=use_flash)
-            # agno 2.x usa 'input='; agno 1.x usava 'message='
             return agent.run(
-                input=full_message,
+                full_message,          # posicional — compatível com agno 1.2.6 e 1.3.x
                 session_id=session_id,
                 user_id=phone,
             )
@@ -164,9 +177,10 @@ async def process_message_job(
             result = await loop.run_in_executor(None, _run_sales)
             agent_used = "sales_pro"
         except Exception as e_pro:
-            # Fallback: Gemini Pro indisponível (503) → tenta com Flash
-            if "503" in str(e_pro) or "UNAVAILABLE" in str(e_pro) or "quota" in str(e_pro).lower():
-                logger.warning("⚠️ Gemini Pro 503 — fallback para Flash")
+            # Fallback: Gemini Pro indisponível (503/quota/conteúdo vazio) → tenta com Flash
+            err_str = str(e_pro).lower()
+            if any(k in err_str for k in ["503", "unavailable", "quota", "contents are required"]):
+                logger.warning(f"⚠️ Gemini Pro falhou ({e_pro}) — fallback para Flash")
                 try:
                     result = await loop.run_in_executor(None, lambda: _run_sales(use_flash=True))
                     agent_used = "sales_flash"
