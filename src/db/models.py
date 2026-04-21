@@ -1,6 +1,6 @@
 """
 Models SQLAlchemy para o projeto Vitalmed.
-Tabelas: leads, lead_status_history, conversations, knowledge_chunks
+Tabelas: leads, lead_status_history, conversations, knowledge_chunks, contracts, contract_dependents
 """
 import uuid
 from datetime import datetime
@@ -45,6 +45,7 @@ class Lead(Base):
     # Relacionamentos
     status_history = relationship("LeadStatusHistory", back_populates="lead", lazy="select")
     conversations = relationship("Conversation", back_populates="lead", lazy="select")
+    contracts = relationship("Contract", back_populates="lead", lazy="select")
 
     def __repr__(self):
         return f"<Lead {self.phone} | {self.status}>"
@@ -120,3 +121,62 @@ class KnowledgeChunk(Base):
 
     def __repr__(self):
         return f"<KnowledgeChunk {self.source_file} p{self.page_number}>"
+
+
+class Contract(Base):
+    """
+    Contrato gerado para o lead.
+    tipo: individual | familiar
+    status: a_enviar → enviado → assinado
+    """
+    __tablename__ = "contracts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_id = Column(UUID(as_uuid=True), ForeignKey("leads.id"), nullable=False, index=True)
+
+    contract_type = Column(String(20), nullable=False)        # individual | familiar
+    status = Column(String(20), nullable=False, default="a_enviar", index=True)
+    # Caminho no GCS: gs://contratovitalmed/{cpf}/{filename}
+    gcs_path = Column(String(500))
+    filename = Column(String(255))
+
+    # Dados do titular (JSON completo)
+    titular_data = Column(JSON, nullable=False)
+    # Dados do contrato (número, datas, forma pagamento)
+    contract_data = Column(JSON, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    signed_at = Column(DateTime)                              # quando assinou
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    lead = relationship("Lead", back_populates="contracts")
+    dependents = relationship("ContractDependent", back_populates="contract", lazy="select", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Contract {self.id} | {self.contract_type} | {self.status}>"
+
+
+class ContractDependent(Base):
+    """
+    Dependentes vinculados a um contrato familiar.
+    """
+    __tablename__ = "contract_dependents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    contract_id = Column(UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False, index=True)
+
+    nome_completo = Column(String(150), nullable=False)
+    cpf = Column(String(14))
+    rg = Column(String(20))
+    data_nascimento = Column(String(20))
+    idade = Column(Integer)
+    parentesco = Column(String(50))      # filho, cônjuge, etc.
+    faixa_etaria = Column(String(30))
+    valor_plano = Column(String(30))
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    contract = relationship("Contract", back_populates="dependents")
+
+    def __repr__(self):
+        return f"<ContractDependent {self.nome_completo} | {self.parentesco}>"

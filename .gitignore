@@ -31,3 +31,6 @@ alembic.ini
 .vscode/
 *.swp
 deploy.sh
+
+# GCS credentials
+credentials/*.json

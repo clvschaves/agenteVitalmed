@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.gateway.routes.webhook import router as webhook_router
 from src.gateway.routes.status import router as status_router
 from src.gateway.routes.admin import router as admin_router
+from src.gateway.routes.contracts import router as contracts_router
 from src.core.config import settings
 
 logging.basicConfig(level=getattr(logging, settings.log_level))
@@ -46,6 +47,7 @@ app.add_middleware(
 app.include_router(webhook_router, prefix="/webhook", tags=["Webhook"])
 app.include_router(status_router, prefix="/webhook", tags=["Status Jobs"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin RAG"])
+app.include_router(contracts_router, prefix="/contracts", tags=["Contratos"])
 
 
 @app.get("/health", tags=["Health"])

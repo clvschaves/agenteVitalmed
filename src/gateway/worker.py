@@ -33,6 +33,7 @@ async def _send_to_n8n_webhook(
     chatwoot_conversation_id: str | None = None,
     chatwoot_contact_id: str | None = None,
     voice: bool = False,
+    contract_gcs_path: str | None = None,
 ) -> None:
     """
     Envia a resposta do agente ao webhook n8n para que seja
@@ -54,6 +55,7 @@ async def _send_to_n8n_webhook(
         "chatwoot_conversation_id": chatwoot_conversation_id or "",
         "chatwoot_contact_id": chatwoot_contact_id or "",
         "voice": voice,
+        "contract_gcs_path": contract_gcs_path or "",
         "sent_at": datetime.utcnow().isoformat(),
     }
 
@@ -103,6 +105,7 @@ async def process_message_job(
     output_tokens = 0
     rag_best_score = 0.0
     error_msg = None
+    contract_gcs_path: str | None = None
 
     try:
         # ─── 1. Buscar ou criar perfil do lead no DB ──────────────────────
@@ -174,6 +177,41 @@ async def process_message_job(
 
         response_text = _extract_response(result)
         tools_called = _extract_tools(result)
+
+        # ─── 4b. Verificar se o SalesAgent indicou transição para ContractAgent ─
+        # Lead em status 'interessado' com tool mark_lead_interested → ContractAgent
+        import re as _re
+        _tools_str = " ".join(str(t) for t in tools_called)
+        _is_contract_phase = any(
+            k in _tools_str for k in ["mark_lead_interested", "mark_lead_closed"]
+        ) or lead_profile.get("status") in ("interessado", "em_contrato")
+
+        if _is_contract_phase:
+            # Roda o ContractAgent para resposta a esta mensagem
+            from src.agents.contract.agent import create_contract_agent
+            def _run_contract():
+                ca = create_contract_agent(session_id=session_id, lead_phone=phone)
+                return ca.run(input=message, session_id=session_id, user_id=phone)
+            try:
+                contract_result = await loop.run_in_executor(None, _run_contract)
+                contract_text = _extract_response(contract_result)
+                contract_tools = _extract_tools(contract_result)
+
+                # Detectar se o contrato foi gerado (tool generate_and_upload_contract chamada)
+                for t in contract_tools:
+                    t_str = str(t)
+                    if "generate_and_upload_contract" in t_str:
+                        # Extrair gcs_path do resultado da tool
+                        gcs_match = _re.search(r"gcs_path['"]?:\s*['"]?(gs://[^'"\s,}]+)", t_str)
+                        if gcs_match:
+                            contract_gcs_path = gcs_match.group(1)
+
+                # Sobrescreve a resposta com a do ContractAgent
+                response_text = contract_text
+                agent_used = "contract_agent"
+                tools_called = contract_tools
+            except Exception as e_contract:
+                logger.warning(f"⚠️ ContractAgent error: {e_contract} — mantendo resposta do SalesAgent")
 
         # ─── 5. Extrair tokens do resultado Agno ─────────────────────────
         input_tokens, output_tokens = _extract_tokens(result)
@@ -248,6 +286,7 @@ async def process_message_job(
                 "response": response_text,
                 "agent_used": agent_used,
                 "tools_called": json.dumps(tools_called),
+                "contract_gcs_path": contract_gcs_path or "",
             },
         )
         logger.info(f"✅ Job {job_id} | phone={phone} | agent={agent_used} | tokens={input_tokens}+{output_tokens}")
@@ -267,6 +306,7 @@ async def process_message_job(
             chatwoot_conversation_id=chatwoot_conversation_id,
             chatwoot_contact_id=lead_profile.get("chatwoot_contact_id") or chatwoot_contact_id,
             voice=lead_profile.get("voice", False),
+            contract_gcs_path=contract_gcs_path,
         )
 
     except Exception as e:
