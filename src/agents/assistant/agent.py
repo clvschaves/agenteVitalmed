@@ -57,7 +57,7 @@ def create_assistant_agent(lead_memory_summary: str = "") -> Agent:
         model=Gemini(id=settings.gemini_flash_model, api_key=settings.google_api_key),
         instructions=_build_assistant_instructions(lead_memory_summary),
         tools=ASSISTANT_TOOLS,
-        add_history_to_messages=False,  # Desabilitado — contexto vem do worker via full_message
+        add_history_to_context=False,  # Desabilitado — contexto vem do worker via full_message
         markdown=False,
         # respond_directly não disponível no agno 2.5.17
     )

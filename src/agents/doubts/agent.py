@@ -30,7 +30,7 @@ def create_doubts_agent() -> Agent:
         model=Gemini(id=settings.gemini_flash_model, api_key=settings.google_api_key),
         instructions=_DOUBTS_CONTEXT,
         tools=DOUBTS_TOOLS,
-        add_history_to_messages=True,
+        add_history_to_context=True,
         num_history_runs=5,
         markdown=False,
     )

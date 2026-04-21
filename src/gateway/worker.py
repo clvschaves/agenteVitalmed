@@ -31,6 +31,8 @@ async def _send_to_n8n_webhook(
     agent_used: str,
     job_id: str,
     chatwoot_conversation_id: str | None = None,
+    chatwoot_contact_id: str | None = None,
+    voice: bool = False,
 ) -> None:
     """
     Envia a resposta do agente ao webhook n8n para que seja
@@ -50,6 +52,8 @@ async def _send_to_n8n_webhook(
         "agent_used": agent_used,
         "job_id": job_id,
         "chatwoot_conversation_id": chatwoot_conversation_id or "",
+        "chatwoot_contact_id": chatwoot_contact_id or "",
+        "voice": voice,
         "sent_at": datetime.utcnow().isoformat(),
     }
 
@@ -72,6 +76,8 @@ async def process_message_job(
     age: int | None = None,
     source: str | None = "botpress",
     chatwoot_conversation_id: str | None = None,
+    chatwoot_contact_id: str | None = None,
+    voice: bool = False,
 ) -> None:
     """
     Processa uma mensagem de lead de forma assíncrona.
@@ -101,7 +107,9 @@ async def process_message_job(
     try:
         # ─── 1. Buscar ou criar perfil do lead no DB ──────────────────────
         lead_profile = await _get_or_create_lead(
-            phone=phone, name=name, email=email, age=age, source=source
+            phone=phone, name=name, email=email, age=age, source=source,
+            chatwoot_contact_id=chatwoot_contact_id,
+            voice=voice,
         )
 
         # ─── 2. Carregar memória longa do lead (.md) ──────────────────────
@@ -142,9 +150,9 @@ async def process_message_job(
 
         def _run_sales(use_flash: bool = False):
             agent = create_sales_agent(fallback_flash=use_flash)
-            # agno 1.2.6 local: parâmetro é 'message' (versão servidor usa 'input')
+            # agno 2.x usa 'input='; agno 1.x usava 'message='
             return agent.run(
-                message=full_message,
+                input=full_message,
                 session_id=session_id,
                 user_id=phone,
             )
@@ -257,6 +265,8 @@ async def process_message_job(
             agent_used=agent_used,
             job_id=job_id,
             chatwoot_conversation_id=chatwoot_conversation_id,
+            chatwoot_contact_id=lead_profile.get("chatwoot_contact_id") or chatwoot_contact_id,
+            voice=lead_profile.get("voice", False),
         )
 
     except Exception as e:
@@ -453,6 +463,8 @@ async def _get_or_create_lead(
     email: str | None,
     age: int | None,
     source: str | None,
+    chatwoot_contact_id: str | None = None,
+    voice: bool = False,
 ) -> dict:
     """Busca lead existente ou cria novo registro no banco."""
     from src.db.session import AsyncSessionLocal
@@ -474,6 +486,8 @@ async def _get_or_create_lead(
                 source=source,
                 status=LeadStatus.EM_ATENDIMENTO,
                 last_contact_at=datetime.utcnow(),
+                chatwoot_contact_id=chatwoot_contact_id,
+                voice=voice,
             )
             db.add(lead)
             logger.info(f"🆕 Novo lead criado: {phone}")
@@ -484,6 +498,11 @@ async def _get_or_create_lead(
                 lead.email = email
             if age and not lead.age:
                 lead.age = age
+            if chatwoot_contact_id and not lead.chatwoot_contact_id:
+                lead.chatwoot_contact_id = chatwoot_contact_id
+            # voice: uma vez ativado (True) nunca volta para False
+            if voice and not lead.voice:
+                lead.voice = True
             lead.status = LeadStatus.EM_ATENDIMENTO
             lead.last_contact_at = datetime.utcnow()
 
@@ -499,6 +518,8 @@ async def _get_or_create_lead(
             "status": lead.status,
             "interested_plan": lead.interested_plan,
             "source": lead.source,
+            "chatwoot_contact_id": lead.chatwoot_contact_id,
+            "voice": bool(lead.voice),
         }
 
 

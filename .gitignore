@@ -30,3 +30,4 @@ alembic.ini
 .idea/
 .vscode/
 *.swp
+deploy.sh
