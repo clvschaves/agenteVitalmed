@@ -216,7 +216,7 @@ async def process_message_job(
                     t_str = str(t)
                     if "generate_and_upload_contract" in t_str:
                         # Extrair gcs_path do resultado da tool
-                        gcs_match = _re.search(r"gcs_path['"]?:\s*['"]?(gs://[^'"\s,}]+)", t_str)
+                        gcs_match = _re.search(r'gcs_path[^:]*:\s*[^g]*(gs://[^\s,}"]+)', t_str)
                         if gcs_match:
                             contract_gcs_path = gcs_match.group(1)
 
