@@ -144,56 +144,123 @@ def _md_to_pdf_bytes(md_content: str) -> tuple[bytes, str]:
                 self.cell(0, 6, f"Pagina {self.page_no()}", align="C")
 
         pdf = ContractPDF(orientation="P", unit="mm", format="A4")
-        pdf.set_margins(15, 22, 15)
-        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_margins(20, 25, 20)
+        pdf.set_auto_page_break(auto=True, margin=20)
         pdf.add_page()
-        _pw = pdf.w - pdf.l_margin - pdf.r_margin
+        _pw = pdf.w - pdf.l_margin - pdf.r_margin  # ex: 210 - 20 - 20 = 170 mm
+
+        def write_line(text: str, font: str = "", size: int = 9,
+                       color: tuple = (30, 30, 30), h: float = 5.5,
+                       align: str = "L", spacing_before: float = 0) -> None:
+            """Escreve uma linha de texto garantindo alinhamento correto."""
+            if spacing_before:
+                pdf.ln(spacing_before)
+            pdf.set_font("Helvetica", font, size)
+            pdf.set_text_color(*color)
+            pdf.set_x(pdf.l_margin)          # ← garante cursor na margem esquerda
+            pdf.multi_cell(_pw, h, safe_text(text), align=align)
 
         # ── Renderização linha a linha ──────────────────────────────────────────
-        lines = processed.split("\n")
-        for line in lines:
-            text = line.rstrip()
+        # Primeiro: agrupar linhas "Campo: Valor" consecutivas em blocos de parágrafo
+        raw_lines = processed.split("\n")
+        grouped: list[tuple[str, str]] = []   # (tipo, conteúdo)
+        i = 0
+        while i < len(raw_lines):
+            text = raw_lines[i].rstrip()
+            # Detectar bloco de Campo: Valor (linhas que contêm ": " mas não são títulos)
+            if (
+                text
+                and not text.startswith("#")
+                and not text.startswith("---")
+                and not text.startswith("*")
+                and ": " in text
+                and not text.startswith("|")
+            ):
+                # Coletar bloco contínuo de "Campo: Valor"
+                block_lines = []
+                while i < len(raw_lines):
+                    t = raw_lines[i].rstrip()
+                    if t and ": " in t and not t.startswith("#") and not t.startswith("|"):
+                        block_lines.append(t)
+                        i += 1
+                    else:
+                        break
+                grouped.append(("data_block", "\n".join(block_lines)))
+            else:
+                grouped.append(("line", text))
+                i += 1
 
-            if text.startswith("### "):
-                pdf.set_font("Helvetica", "B", 10)
-                pdf.set_text_color(20, 20, 60)
+        # ── Renderizar grupos ───────────────────────────────────────────────────
+        for kind, text in grouped:
+
+            if kind == "data_block":
+                # Bloco de dados: fundo levemente cinza, texto corrido
+                pdf.set_fill_color(248, 248, 252)
+                pdf.set_draw_color(200, 200, 220)
+                pdf.set_x(pdf.l_margin)
+                # Calcular altura do bloco
+                lines_in_block = text.split("\n")
+                block_h = len(lines_in_block) * 5.5 + 4
+                y0 = pdf.get_y()
+                pdf.rect(pdf.l_margin, y0, _pw, block_h, style="FD")
+                # Renderizar cada par Campo: Valor
+                pdf.set_y(y0 + 2)
+                for data_line in lines_in_block:
+                    clean = _re.sub(r"\*\*(.+?)\*\*", r"\1", data_line)
+                    # Separar campo do valor
+                    if ": " in clean:
+                        campo, _, valor = clean.partition(": ")
+                        # Campo em negrito + valor normal
+                        pdf.set_font("Helvetica", "B", 8)
+                        pdf.set_text_color(40, 40, 80)
+                        pdf.set_x(pdf.l_margin + 2)
+                        campo_w = pdf.get_string_width(safe_text(campo + ": "))
+                        pdf.cell(campo_w, 5.5, safe_text(campo + ": "))
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(30, 30, 30)
+                        valor_w = _pw - campo_w - 4
+                        pdf.multi_cell(max(valor_w, 20), 5.5, safe_text(valor), align="L")
+                    else:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(30, 30, 30)
+                        pdf.set_x(pdf.l_margin + 2)
+                        pdf.multi_cell(_pw - 4, 5.5, safe_text(clean), align="L")
                 pdf.ln(3)
-                pdf.multi_cell(_pw, 5, safe_text(text[4:]), align="L")
+                continue
+
+            # ── Linhas normais ──────────────────────────────────────────────────
+            if text.startswith("### "):
+                write_line(text[4:], font="B", size=10,
+                           color=(20, 20, 60), h=5, spacing_before=4)
                 pdf.ln(1)
 
             elif text.startswith("## "):
-                pdf.set_font("Helvetica", "B", 12)
-                pdf.set_text_color(10, 10, 80)
-                pdf.ln(4)
-                pdf.multi_cell(_pw, 6, safe_text(text[3:]), align="L")
+                write_line(text[3:], font="B", size=12,
+                           color=(10, 10, 80), h=6, spacing_before=5)
+                pdf.set_x(pdf.l_margin)
                 pdf.set_draw_color(100, 100, 180)
                 pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-                pdf.ln(3)
+                pdf.ln(4)
 
             elif text.startswith("# "):
-                pdf.set_font("Helvetica", "B", 14)
-                pdf.set_text_color(10, 10, 80)
-                pdf.ln(5)
-                pdf.multi_cell(_pw, 7, safe_text(text[2:]), align="C")
+                write_line(text[2:], font="B", size=14,
+                           color=(10, 10, 80), h=7, align="C", spacing_before=6)
                 pdf.ln(4)
 
             elif text.strip() == "---":
-                pdf.set_draw_color(180, 180, 180)
                 pdf.ln(2)
+                pdf.set_x(pdf.l_margin)
+                pdf.set_draw_color(180, 180, 180)
                 pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
                 pdf.ln(3)
 
             elif text.strip() == "":
-                pdf.ln(2)
+                pdf.ln(1.5)
 
             else:
-                pdf.set_font("Helvetica", "", 9)
-                pdf.set_text_color(30, 30, 30)
-                # Converter **negrito** → texto normal (sem formatação no fpdf2 básico)
                 clean = _re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-                # Bullets * → •
                 clean = _re.sub(r"^\*\s+", "  > ", clean)
-                pdf.multi_cell(_pw, 5, safe_text(clean), align="L")
+                write_line(clean, font="", size=9, color=(30, 30, 30), h=5)
 
         return bytes(pdf.output()), "pdf"
 
