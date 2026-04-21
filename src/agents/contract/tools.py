@@ -48,42 +48,20 @@ def _build_dependentes_tabela(dependentes: list[dict]) -> str:
 
 def _md_to_pdf_bytes(md_content: str) -> tuple[bytes, str]:
     """
-    Converte Markdown para PDF usando fpdf2 (pure Python, sem dependências de sistema).
+    Converte Markdown para PDF usando fpdf2 (pure Python).
+    Tabelas são convertidas em texto corrido (Campo: Valor) para máxima estabilidade.
     Retorna (bytes, extensão).
     """
     try:
         from fpdf import FPDF
         import re as _re
 
-        class ContractPDF(FPDF):
-            def header(self):
-                self.set_font("Helvetica", "B", 9)
-                self.set_text_color(100, 100, 100)
-                self.cell(0, 6, "VITALMED - CONTRATO DE PRESTACAO DE SERVICOS", align="C")
-                self.ln(4)
-                self.set_draw_color(200, 200, 200)
-                self.line(10, self.get_y(), 200, self.get_y())
-                self.ln(3)
-
-            def footer(self):
-                self.set_y(-12)
-                self.set_font("Helvetica", "I", 8)
-                self.set_text_color(150, 150, 150)
-                self.cell(0, 6, f"Página {self.page_no()}", align="C")
-
-        pdf = ContractPDF(orientation="P", unit="mm", format="A4")
-        pdf.set_margins(15, 20, 15)
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pdf.add_page()
-        _pw = pdf.w - pdf.l_margin - pdf.r_margin  # largura útil do texto
-
+        # ── Transliteração Latin-1 ──────────────────────────────────────────────
         def safe_text(t: str) -> str:
-            """Transliterate chars unsupported by Helvetica (Latin-1 only)."""
-            replacements = {
-                # Dashes and quotes
+            """Transliterate PT-BR chars to Latin-1 (Helvetica)."""
+            r = {
                 "\u2014": "-", "\u2013": "-", "\u2019": "'", "\u2018": "'",
                 "\u201c": '"', "\u201d": '"', "\xa0": " ", "\u2026": "...",
-                # Portuguese accents (á é í ó ú â ê ô ã õ ç ü ñ etc.)
                 "\u00e0": "a", "\u00e1": "a", "\u00e2": "a", "\u00e3": "a",
                 "\u00e4": "a", "\u00e5": "a", "\u00e6": "ae",
                 "\u00c0": "A", "\u00c1": "A", "\u00c2": "A", "\u00c3": "A",
@@ -92,115 +70,135 @@ def _md_to_pdf_bytes(md_content: str) -> tuple[bytes, str]:
                 "\u00ec": "i", "\u00ed": "i", "\u00ee": "i", "\u00ef": "i",
                 "\u00cc": "I", "\u00cd": "I", "\u00ce": "I",
                 "\u00f2": "o", "\u00f3": "o", "\u00f4": "o", "\u00f5": "o",
-                "\u00c2": "O", "\u00d3": "O", "\u00d4": "O", "\u00d5": "O",
+                "\u00d3": "O", "\u00d4": "O", "\u00d5": "O",
                 "\u00f9": "u", "\u00fa": "u", "\u00fb": "u", "\u00fc": "u",
                 "\u00da": "U", "\u00db": "U", "\u00dc": "U",
                 "\u00e7": "c", "\u00c7": "C",
                 "\u00f1": "n", "\u00d1": "N",
                 "\u00df": "ss",
             }
-            for k, v in replacements.items():
+            for k, v in r.items():
                 t = t.replace(k, v)
-            # Remove any remaining non-latin1 chars
             return t.encode("latin-1", errors="replace").decode("latin-1")
 
-        lines = md_content.split("\n")
-        i = 0
-        while i < len(lines):
-            line = lines[i].rstrip()
+        # ── Pré-processamento: tabelas → texto corrido ──────────────────────────
+        def table_to_text(md: str) -> str:
+            """
+            Converte tabelas Markdown em linhas "Campo: Valor".
+            Cabeçalho da tabela vira prefixo; separadores (---) são removidos.
+            """
+            out_lines = []
+            raw_lines = md.split("\n")
+            i = 0
+            while i < len(raw_lines):
+                line = raw_lines[i]
+                if line.strip().startswith("|"):
+                    # Coletar bloco de tabela
+                    block = []
+                    while i < len(raw_lines) and raw_lines[i].strip().startswith("|"):
+                        block.append(raw_lines[i])
+                        i += 1
+                    # Filtrar separadores (|---|)
+                    rows = [r for r in block
+                            if not _re.match(r"^\s*\|[-| :]+\|\s*$", r)]
+                    if not rows:
+                        continue
+                    headers = [c.strip() for c in rows[0].strip().strip("|").split("|")]
+                    # Se só cabeçalho (sem dados), escrever como itens de lista
+                    if len(rows) == 1:
+                        for h in headers:
+                            clean_h = _re.sub(r"\*\*(.+?)\*\*", r"\1", h)
+                            out_lines.append(f"  {clean_h}")
+                    else:
+                        for row in rows[1:]:
+                            vals = [c.strip() for c in row.strip().strip("|").split("|")]
+                            for h, v in zip(headers, vals):
+                                clean_h = _re.sub(r"\*\*(.+?)\*\*", r"\1", h)
+                                clean_v = _re.sub(r"\*\*(.+?)\*\*", r"\1", v)
+                                if clean_v.strip():
+                                    out_lines.append(f"{clean_h}: {clean_v}")
+                    out_lines.append("")  # espaço após bloco
+                else:
+                    out_lines.append(line)
+                    i += 1
+            return "\n".join(out_lines)
 
-            # ── Títulos ──────────────────────────────────────────
-            if line.startswith("### "):
+        # Pré-processar o Markdown
+        processed = table_to_text(md_content)
+
+        # ── Classe PDF ──────────────────────────────────────────────────────────
+        class ContractPDF(FPDF):
+            def header(self):
+                self.set_font("Helvetica", "B", 9)
+                self.set_text_color(100, 100, 100)
+                self.cell(0, 6, "VITALMED - CONTRATO DE PRESTACAO DE SERVICOS", align="C")
+                self.ln(3)
+                self.set_draw_color(200, 200, 200)
+                self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+                self.ln(4)
+
+            def footer(self):
+                self.set_y(-12)
+                self.set_font("Helvetica", "I", 8)
+                self.set_text_color(150, 150, 150)
+                self.cell(0, 6, f"Pagina {self.page_no()}", align="C")
+
+        pdf = ContractPDF(orientation="P", unit="mm", format="A4")
+        pdf.set_margins(15, 22, 15)
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        _pw = pdf.w - pdf.l_margin - pdf.r_margin
+
+        # ── Renderização linha a linha ──────────────────────────────────────────
+        lines = processed.split("\n")
+        for line in lines:
+            text = line.rstrip()
+
+            if text.startswith("### "):
                 pdf.set_font("Helvetica", "B", 10)
-                pdf.set_text_color(30, 30, 30)
-                pdf.ln(2)
-                pdf.multi_cell(_pw, 5, safe_text(line[4:]), align="L")
-                pdf.ln(1)
-
-            elif line.startswith("## "):
-                pdf.set_font("Helvetica", "B", 11)
                 pdf.set_text_color(20, 20, 60)
                 pdf.ln(3)
-                pdf.multi_cell(0, 6, safe_text(line[3:]), align="L")
-                pdf.set_draw_color(180, 180, 220)
-                pdf.line(18, pdf.get_y(), 192, pdf.get_y())
-                pdf.ln(2)
+                pdf.multi_cell(_pw, 5, safe_text(text[4:]), align="L")
+                pdf.ln(1)
 
-            elif line.startswith("# "):
-                pdf.set_font("Helvetica", "B", 13)
+            elif text.startswith("## "):
+                pdf.set_font("Helvetica", "B", 12)
                 pdf.set_text_color(10, 10, 80)
                 pdf.ln(4)
-                pdf.multi_cell(_pw, 7, safe_text(line[2:]), align="C")
+                pdf.multi_cell(_pw, 6, safe_text(text[3:]), align="L")
+                pdf.set_draw_color(100, 100, 180)
+                pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
                 pdf.ln(3)
 
-            # ── Linha horizontal ─────────────────────────────────
-            elif line.strip() == "---":
-                pdf.set_draw_color(200, 200, 200)
+            elif text.startswith("# "):
+                pdf.set_font("Helvetica", "B", 14)
+                pdf.set_text_color(10, 10, 80)
+                pdf.ln(5)
+                pdf.multi_cell(_pw, 7, safe_text(text[2:]), align="C")
+                pdf.ln(4)
+
+            elif text.strip() == "---":
+                pdf.set_draw_color(180, 180, 180)
                 pdf.ln(2)
-                pdf.line(18, pdf.get_y(), 192, pdf.get_y())
+                pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
                 pdf.ln(3)
 
-            # ── Tabela Markdown ──────────────────────────────────
-            elif line.startswith("|") and "|" in line[1:]:
-                # Coletar todas as linhas da tabela
-                table_lines = []
-                while i < len(lines) and lines[i].startswith("|"):
-                    if not _re.match(r"^\|[-| :]+\|$", lines[i].strip()):
-                        table_lines.append(lines[i])
-                    i += 1
-
-                if not table_lines:
-                    continue
-
-                pdf.set_font("Helvetica", "", 8)
-                pdf.set_text_color(30, 30, 30)
+            elif text.strip() == "":
                 pdf.ln(2)
 
-                for row_idx, tl in enumerate(table_lines):
-                    cells = [c.strip() for c in tl.strip().strip("|").split("|")]
-                    n_cols = max(len(cells), 1)
-                    page_w = pdf.w - pdf.l_margin - pdf.r_margin
-                    col_w = page_w / n_cols
-                    if row_idx == 0:
-                        pdf.set_font("Helvetica", "B", 7)
-                        pdf.set_fill_color(220, 220, 240)
-                        fill = True
-                    else:
-                        pdf.set_font("Helvetica", "", 7)
-                        pdf.set_fill_color(255, 255, 255)
-                        fill = row_idx % 2 == 0
-                    # Salvar posição Y para alinhar colunas
-                    row_y = pdf.get_y()
-                    max_h = 5
-                    x0 = pdf.l_margin
-                    for ci, cell in enumerate(cells):
-                        txt = safe_text(_re.sub(r"\*\*(.+?)\*\*", r"\1", cell))
-                        pdf.set_xy(x0 + ci * col_w, row_y)
-                        pdf.multi_cell(col_w, max_h, txt, border=1, fill=fill, align="L")
-                    pdf.set_y(row_y + max_h)
-
-                pdf.ln(2)
-                continue  # já avançou i
-
-            # ── Linha em branco ──────────────────────────────────
-            elif line.strip() == "":
-                pdf.ln(2)
-
-            # ── Texto normal (negrito inline) ────────────────────
             else:
                 pdf.set_font("Helvetica", "", 9)
-                pdf.set_text_color(40, 40, 40)
-                # Remover marcação **bold** simples
-                clean = _re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-                clean = _re.sub(r"^\*\s+", "• ", clean)  # bullets
+                pdf.set_text_color(30, 30, 30)
+                # Converter **negrito** → texto normal (sem formatação no fpdf2 básico)
+                clean = _re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+                # Bullets * → •
+                clean = _re.sub(r"^\*\s+", "  > ", clean)
                 pdf.multi_cell(_pw, 5, safe_text(clean), align="L")
-
-            i += 1
 
         return bytes(pdf.output()), "pdf"
 
     except Exception as e:
-        logger.warning(f"fpdf2 indisponível ({e}) — enviando .md para GCS")
+        logger.warning(f"fpdf2 erro ({e}) — enviando .md para GCS")
         return md_content.encode("utf-8"), "md"
 
 
