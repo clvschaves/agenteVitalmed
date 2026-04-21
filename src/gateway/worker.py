@@ -212,14 +212,27 @@ async def process_message_job(
         if _is_contract_phase:
             from src.agents.contract.agent import create_contract_agent
 
-            # Monta contexto mínimo para o ContractAgent saber quem é o lead
+            # Carrega histórico completo da conversa para o ContractAgent ter contexto
+            # de TODOS os dados já coletados em mensagens anteriores
+            _contract_history = await _load_recent_history(
+                lead_id=lead_profile["id"],
+                session_id=session_id,
+                limit=30,  # histórico longo — coleta de dados pode ter muitas mensagens
+            )
+            _history_block = (
+                f"\n\n## Histórico Completo da Conversa\n{_contract_history}"
+                if _contract_history else ""
+            )
+
+            # Contexto rico: perfil do lead + histórico + mensagem atual
             _contract_ctx = (
                 f"## Contexto do Lead\n"
                 f"- Telefone: {phone}\n"
                 f"- Nome: {lead_profile.get('name') or 'Não informado'}\n"
                 f"- Plano de interesse: {lead_profile.get('interested_plan') or 'Não definido'}\n"
-                f"- Status: {lead_profile.get('status')}\n\n"
-                f"**Mensagem do lead:**\n{message.strip()}"
+                f"- Status: {lead_profile.get('status')}"
+                f"{_history_block}\n\n"
+                f"**Mensagem atual do lead:**\n{message.strip()}"
             )
 
             def _run_contract():
