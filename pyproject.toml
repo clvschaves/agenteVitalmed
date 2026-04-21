@@ -31,9 +31,8 @@ dependencies = [
     # Google Cloud Storage (contratos)
     "google-cloud-storage>=2.16.0",
 
-    # Geração de PDF (contratos)
-    "markdown2>=2.5.0",
-    "weasyprint>=60.0",
+    # Geração de PDF (contratos) - pure Python, sem dependências de sistema
+    "fpdf2>=2.7.0",
 
     # Observabilidade
     "langfuse>=2.0.0",

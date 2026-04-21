@@ -1,6 +1,8 @@
 """
 ContractAgent — coleta dados do usuário, gera e sobe o contrato para o GCS.
 """
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -21,11 +23,11 @@ def create_contract_agent(session_id: str, lead_phone: str) -> Agent:
 
     return Agent(
         name="contract_agent",
-        model=Gemini(id=settings.gemini_flash_model, api_key=settings.gemini_api_key),
+        model=Gemini(id=settings.gemini_flash_model, api_key=settings.google_api_key),
         instructions=instructions,
         tools=[generate_and_upload_contract],
         session_id=session_id,
-        add_history_to_context=True,
+        add_history_to_messages=True,
         num_history_responses=20,
         markdown=False,
         show_tool_calls=False,

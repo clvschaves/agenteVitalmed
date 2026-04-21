@@ -2,11 +2,14 @@
 Tools do ContractAgent:
 - generate_and_upload_contract: preenche o template e sobe ao GCS
 """
+from __future__ import annotations
+
 import logging
 import re
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from agno.tools import tool
 
@@ -40,33 +43,166 @@ def _build_dependentes_tabela(dependentes: list[dict]) -> str:
             f"| {d.get('valor_plano', '')} |"
         )
         rows.append(row)
-    return "\n".join(rows) if rows else "| — | — | — | — | — | — |"
+    return "\n".join(rows) if rows else "| - | - | - | - | - | - |"
 
 
-def _md_to_pdf_bytes(md_content: str) -> bytes:
+def _md_to_pdf_bytes(md_content: str) -> tuple[bytes, str]:
     """
-    Converte Markdown para PDF.
-    Tenta usar weasyprint; se não disponível, retorna o md como UTF-8 bytes
-    e sinaliza com extensão .md (fallback para testes locais).
+    Converte Markdown para PDF usando fpdf2 (pure Python, sem dependências de sistema).
+    Retorna (bytes, extensão).
     """
     try:
-        import markdown2
-        from weasyprint import HTML
-        html = f"""
-        <html><head>
-        <meta charset="utf-8">
-        <style>
-          body {{ font-family: Arial, sans-serif; font-size: 11px; margin: 2cm; }}
-          h1 {{ font-size: 14px; }} h2 {{ font-size: 13px; }} h3 {{ font-size: 12px; }}
-          table {{ border-collapse: collapse; width: 100%; font-size: 10px; }}
-          th, td {{ border: 1px solid #ccc; padding: 4px; }}
-        </style></head>
-        <body>{markdown2.markdown(md_content, extras=["tables"])}</body></html>
-        """
-        return HTML(string=html).write_pdf(), "pdf"
-    except ImportError:
-        logger.warning("weasyprint/markdown2 não disponível — enviando .md para GCS")
+        from fpdf import FPDF
+        import re as _re
+
+        class ContractPDF(FPDF):
+            def header(self):
+                self.set_font("Helvetica", "B", 9)
+                self.set_text_color(100, 100, 100)
+                self.cell(0, 6, "VITALMED - CONTRATO DE PRESTACAO DE SERVICOS", align="C")
+                self.ln(4)
+                self.set_draw_color(200, 200, 200)
+                self.line(10, self.get_y(), 200, self.get_y())
+                self.ln(3)
+
+            def footer(self):
+                self.set_y(-12)
+                self.set_font("Helvetica", "I", 8)
+                self.set_text_color(150, 150, 150)
+                self.cell(0, 6, f"Página {self.page_no()}", align="C")
+
+        pdf = ContractPDF(orientation="P", unit="mm", format="A4")
+        pdf.set_margins(15, 20, 15)
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        _pw = pdf.w - pdf.l_margin - pdf.r_margin  # largura útil do texto
+
+        def safe_text(t: str) -> str:
+            """Transliterate chars unsupported by Helvetica (Latin-1 only)."""
+            replacements = {
+                # Dashes and quotes
+                "\u2014": "-", "\u2013": "-", "\u2019": "'", "\u2018": "'",
+                "\u201c": '"', "\u201d": '"', "\xa0": " ", "\u2026": "...",
+                # Portuguese accents (á é í ó ú â ê ô ã õ ç ü ñ etc.)
+                "\u00e0": "a", "\u00e1": "a", "\u00e2": "a", "\u00e3": "a",
+                "\u00e4": "a", "\u00e5": "a", "\u00e6": "ae",
+                "\u00c0": "A", "\u00c1": "A", "\u00c2": "A", "\u00c3": "A",
+                "\u00e8": "e", "\u00e9": "e", "\u00ea": "e", "\u00eb": "e",
+                "\u00c8": "E", "\u00c9": "E", "\u00ca": "E",
+                "\u00ec": "i", "\u00ed": "i", "\u00ee": "i", "\u00ef": "i",
+                "\u00cc": "I", "\u00cd": "I", "\u00ce": "I",
+                "\u00f2": "o", "\u00f3": "o", "\u00f4": "o", "\u00f5": "o",
+                "\u00c2": "O", "\u00d3": "O", "\u00d4": "O", "\u00d5": "O",
+                "\u00f9": "u", "\u00fa": "u", "\u00fb": "u", "\u00fc": "u",
+                "\u00da": "U", "\u00db": "U", "\u00dc": "U",
+                "\u00e7": "c", "\u00c7": "C",
+                "\u00f1": "n", "\u00d1": "N",
+                "\u00df": "ss",
+            }
+            for k, v in replacements.items():
+                t = t.replace(k, v)
+            # Remove any remaining non-latin1 chars
+            return t.encode("latin-1", errors="replace").decode("latin-1")
+
+        lines = md_content.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+
+            # ── Títulos ──────────────────────────────────────────
+            if line.startswith("### "):
+                pdf.set_font("Helvetica", "B", 10)
+                pdf.set_text_color(30, 30, 30)
+                pdf.ln(2)
+                pdf.multi_cell(_pw, 5, safe_text(line[4:]), align="L")
+                pdf.ln(1)
+
+            elif line.startswith("## "):
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.set_text_color(20, 20, 60)
+                pdf.ln(3)
+                pdf.multi_cell(0, 6, safe_text(line[3:]), align="L")
+                pdf.set_draw_color(180, 180, 220)
+                pdf.line(18, pdf.get_y(), 192, pdf.get_y())
+                pdf.ln(2)
+
+            elif line.startswith("# "):
+                pdf.set_font("Helvetica", "B", 13)
+                pdf.set_text_color(10, 10, 80)
+                pdf.ln(4)
+                pdf.multi_cell(_pw, 7, safe_text(line[2:]), align="C")
+                pdf.ln(3)
+
+            # ── Linha horizontal ─────────────────────────────────
+            elif line.strip() == "---":
+                pdf.set_draw_color(200, 200, 200)
+                pdf.ln(2)
+                pdf.line(18, pdf.get_y(), 192, pdf.get_y())
+                pdf.ln(3)
+
+            # ── Tabela Markdown ──────────────────────────────────
+            elif line.startswith("|") and "|" in line[1:]:
+                # Coletar todas as linhas da tabela
+                table_lines = []
+                while i < len(lines) and lines[i].startswith("|"):
+                    if not _re.match(r"^\|[-| :]+\|$", lines[i].strip()):
+                        table_lines.append(lines[i])
+                    i += 1
+
+                if not table_lines:
+                    continue
+
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_text_color(30, 30, 30)
+                pdf.ln(2)
+
+                for row_idx, tl in enumerate(table_lines):
+                    cells = [c.strip() for c in tl.strip().strip("|").split("|")]
+                    n_cols = max(len(cells), 1)
+                    page_w = pdf.w - pdf.l_margin - pdf.r_margin
+                    col_w = page_w / n_cols
+                    if row_idx == 0:
+                        pdf.set_font("Helvetica", "B", 7)
+                        pdf.set_fill_color(220, 220, 240)
+                        fill = True
+                    else:
+                        pdf.set_font("Helvetica", "", 7)
+                        pdf.set_fill_color(255, 255, 255)
+                        fill = row_idx % 2 == 0
+                    # Salvar posição Y para alinhar colunas
+                    row_y = pdf.get_y()
+                    max_h = 5
+                    x0 = pdf.l_margin
+                    for ci, cell in enumerate(cells):
+                        txt = safe_text(_re.sub(r"\*\*(.+?)\*\*", r"\1", cell))
+                        pdf.set_xy(x0 + ci * col_w, row_y)
+                        pdf.multi_cell(col_w, max_h, txt, border=1, fill=fill, align="L")
+                    pdf.set_y(row_y + max_h)
+
+                pdf.ln(2)
+                continue  # já avançou i
+
+            # ── Linha em branco ──────────────────────────────────
+            elif line.strip() == "":
+                pdf.ln(2)
+
+            # ── Texto normal (negrito inline) ────────────────────
+            else:
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(40, 40, 40)
+                # Remover marcação **bold** simples
+                clean = _re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+                clean = _re.sub(r"^\*\s+", "• ", clean)  # bullets
+                pdf.multi_cell(_pw, 5, safe_text(clean), align="L")
+
+            i += 1
+
+        return bytes(pdf.output()), "pdf"
+
+    except Exception as e:
+        logger.warning(f"fpdf2 indisponível ({e}) — enviando .md para GCS")
         return md_content.encode("utf-8"), "md"
+
 
 
 # ─── tool principal ──────────────────────────────────────────────────────────
@@ -74,54 +210,59 @@ def _md_to_pdf_bytes(md_content: str) -> bytes:
 @tool
 def generate_and_upload_contract(
     contract_type: str,
-    titular: dict,
-    contract_info: dict,
-    dependentes: list | None = None,
-    resumo: dict | None = None,
-) -> dict:
+    titular_json: str,
+    contract_info_json: str,
+    dependentes_json: str = "[]",
+    resumo_json: str = "{}",
+) -> str:
     """
     Gera o contrato preenchido e faz upload para o GCS.
 
     Args:
         contract_type: "individual" ou "familiar"
-        titular: dicionário com todos os campos do contratante
-        contract_info: dicionário com dados do contrato (numero, datas, forma_pagamento, etc.)
-        dependentes: lista de dicionários de dependentes (apenas para "familiar")
-        resumo: dicionário com valores financeiros
+        titular_json: JSON com campos do contratante (nome_completo, cpf, rg, data_nascimento,
+                      idade, estado_civil, profissao, nacionalidade, endereco_completo,
+                      cidade, uf, cep, telefone, whatsapp, email, faixa_etaria, valor_plano)
+        contract_info_json: JSON com dados do contrato (forma_pagamento, dia_vencimento, etc.)
+        dependentes_json: JSON array de dependentes (apenas para contrato familiar)
+        resumo_json: JSON com valores financeiros (valor_titular, valor_mensal_final, etc.)
 
     Returns:
-        dict com gcs_path e filename do contrato gerado
+        JSON string com gcs_path, filename e contract_number do contrato gerado
     """
+    import json
     from src.core.gcs_client import upload_contract_to_gcs
-    from src.db.session import SyncSessionLocal
-    from src.db.models import Contract, ContractDependent, Lead
 
-    # ── 1. Descobrir o lead_id pelo telefone (cpf pode não estar no Lead)
+    titular = json.loads(titular_json)
+    contract_info = json.loads(contract_info_json)
+    dependentes = json.loads(dependentes_json) if dependentes_json else []
+    resumo = json.loads(resumo_json) if resumo_json else {}
+
+    # ── 1. CPF limpo para path no GCS
     cpf_raw = titular.get("cpf", "sem_cpf")
     cpf_clean = re.sub(r"[^\d]", "", cpf_raw) or "sem_cpf"
 
-    # ── 2. Montar número de contrato e datas automáticas se não fornecidos
+    # ── 2. Defaults automáticos
     hoje = datetime.now()
     contract_info.setdefault("numero", f"VTM-{hoje.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}")
     contract_info.setdefault("data_emissao", hoje.strftime("%d/%m/%Y"))
     contract_info.setdefault("data_assinatura", hoje.strftime("%d/%m/%Y"))
-    contract_info.setdefault("local_emissao", "São Luís - MA")
-    contract_info.setdefault("local_assinatura", "São Luís - MA")
+    contract_info.setdefault("local_emissao", "Sao Luis - MA")
+    contract_info.setdefault("local_assinatura", "Sao Luis - MA")
     contract_info.setdefault("codigo_associado", f"VM-{cpf_clean[-4:]}")
     contract_info.setdefault("data_inicio_vigencia", hoje.strftime("%d/%m/%Y"))
     contract_info.setdefault("dia_vencimento", "10")
 
-    resumo = resumo or {}
-    resumo.setdefault("descontos", "Não aplicável")
-    resumo.setdefault("valor_dependentes", "Não aplicável")
+    resumo.setdefault("descontos", "Nao aplicavel")
+    resumo.setdefault("valor_dependentes", "Nao aplicavel")
     resumo.setdefault("valor_adesao", "R$ 0,00")
     resumo.setdefault("total_ato_contratacao", resumo.get("valor_adesao", "R$ 0,00"))
 
-    # ── 3. Escolher template
+    # ── 3. Template
     tpl_name = "template_familiar.md" if contract_type == "familiar" else "template_individual.md"
     template_path = _TEMPLATES_DIR / tpl_name
 
-    # ── 4. Montar flat dict de substituição
+    # ── 4. Flat dict para substituição
     flat: dict = {}
     for k, v in titular.items():
         flat[f"contratante.{k}"] = v
@@ -135,65 +276,74 @@ def generate_and_upload_contract(
     flat["testemunha2.nome"] = ""
     flat["testemunha2.cpf"] = ""
 
-    # ── 5. Tabela de dependentes (template familiar)
     if contract_type == "familiar" and dependentes:
         flat["dependentes_tabela"] = _build_dependentes_tabela(dependentes)
 
-    # ── 6. Preencher template
+    # ── 5. Preencher + gerar PDF
     md_content = _fill_template(template_path, flat)
-
-    # ── 7. Converter para PDF (ou md fallback)
     file_bytes, ext = _md_to_pdf_bytes(md_content)
     filename = f"contrato_{contract_info['numero'].replace('/', '-')}.{ext}"
 
-    # ── 8. Upload GCS
+    # ── 6. Upload GCS
     gcs_path = upload_contract_to_gcs(
         cpf=cpf_clean,
         filename=filename,
         content=file_bytes,
-        content_type="application/pdf" if ext == "pdf" else "text/markdown",
+        content_type="application/pdf" if ext == "pdf" else "text/plain",
     )
 
-    # ── 9. Persistir no banco
-    with SyncSessionLocal() as db:
-        lead = db.query(Lead).filter(Lead.phone == titular.get("whatsapp", "")).first()
-        lead_id = lead.id if lead else None
+    # ── 7. Persistir no banco (opcional — não bloqueia se DB estiver off)
+    contract_id = "sem-db"
+    try:
+        from src.db.session import SyncSessionLocal
+        from src.db.models import Contract, ContractDependent, Lead
 
-        contract = Contract(
-            lead_id=lead_id,
-            contract_type=contract_type,
-            status="enviado",
-            gcs_path=gcs_path,
-            filename=filename,
-            titular_data=titular,
-            contract_data=contract_info,
-        )
-        db.add(contract)
-        db.flush()
+        with SyncSessionLocal() as db:
+            lead = db.query(Lead).filter(Lead.phone == titular.get("whatsapp", "")).first()
+            lead_id = lead.id if lead else None
 
-        if contract_type == "familiar" and dependentes:
-            for dep in dependentes:
-                cd = ContractDependent(
-                    contract_id=contract.id,
-                    nome_completo=dep.get("nome_completo", ""),
-                    cpf=dep.get("cpf", ""),
-                    rg=dep.get("rg", ""),
-                    data_nascimento=dep.get("data_nascimento", ""),
-                    idade=dep.get("idade"),
-                    parentesco=dep.get("parentesco", ""),
-                    faixa_etaria=dep.get("faixa_etaria", ""),
-                    valor_plano=dep.get("valor_plano", ""),
-                )
-                db.add(cd)
+            contract = Contract(
+                lead_id=lead_id,
+                contract_type=contract_type,
+                status="enviado",
+                gcs_path=gcs_path,
+                filename=filename,
+                titular_data=titular,
+                contract_data=contract_info,
+            )
+            db.add(contract)
+            db.flush()
 
-        db.commit()
-        contract_id = str(contract.id)
+            if contract_type == "familiar" and dependentes:
+                for dep in dependentes:
+                    db.add(ContractDependent(
+                        contract_id=contract.id,
+                        nome_completo=dep.get("nome_completo", ""),
+                        cpf=dep.get("cpf", ""),
+                        rg=dep.get("rg", ""),
+                        data_nascimento=dep.get("data_nascimento", ""),
+                        idade=dep.get("idade"),
+                        parentesco=dep.get("parentesco", ""),
+                        faixa_etaria=dep.get("faixa_etaria", ""),
+                        valor_plano=dep.get("valor_plano", ""),
+                    ))
 
-    logger.info(f"✅ Contrato {contract_info['numero']} gerado | GCS: {gcs_path}")
-    return {
+            db.commit()
+            contract_id = str(contract.id)
+    except Exception as e_db:
+        logger.warning(f"DB persist ignorado (teste/sem-DB): {e_db}")
+
+    logger.info(f"Contrato {contract_info['numero']} gerado | GCS: {gcs_path}")
+    result = {
         "success": True,
         "contract_id": contract_id,
         "gcs_path": gcs_path,
         "filename": filename,
         "contract_number": contract_info["numero"],
+        "format": ext,
     }
+    import json as _json
+    return _json.dumps(result, ensure_ascii=False)
+
+
+

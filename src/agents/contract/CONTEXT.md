@@ -91,4 +91,21 @@ Quando estiver gerando o contrato, avise antes de chamar a tool:
 ---
 
 ## TOOLS DISPONÍVEIS
-- `generate_and_upload_contract(contract_type, titular, contract_info, dependentes, resumo)` → gera e envia o contrato para o bucket
+
+Use a tool `generate_and_upload_contract` quando todos os dados forem confirmados.
+
+Parâmetros obrigatórios (todos como string JSON):
+- `contract_type`: "individual" ou "familiar"
+- `titular_json`: JSON com os campos do contratante
+- `contract_info_json`: JSON com forma_pagamento, dia_vencimento, plano
+- `dependentes_json`: JSON array (somente para familiar, padrão: "[]")
+- `resumo_json`: JSON com valores financeiros (padrão: "{}")
+
+Exemplo de chamada para contrato individual:
+```
+generate_and_upload_contract(
+  contract_type="individual",
+  titular_json='{"nome_completo":"Maria Silva","cpf":"123.456.789-00","rg":"1234567","data_nascimento":"15/03/1958","idade":"68","estado_civil":"Viúva","profissao":"Aposentada","nacionalidade":"Brasileira","endereco_completo":"Rua das Flores, 100","cidade":"Sao Luis","uf":"MA","cep":"65000-000","telefone":"(98) 99999-0000","whatsapp":"+5598999990000","email":"maria@email.com","faixa_etaria":"Senior","valor_plano":"R$ 149,90"}',
+  contract_info_json='{"forma_pagamento":"Cartao de credito","dia_vencimento":"10","plano":"individual"}',
+)
+```

@@ -47,6 +47,7 @@ def create_sales_agent(fallback_flash: bool = False) -> Agent:
         model=Gemini(id=model_id, api_key=settings.google_api_key),
         instructions=_CONTEXT,
         tools=SALES_TOOLS,
-        add_history_to_context=False,
+        add_history_to_messages=True,
+        num_history_responses=10,
         markdown=False,
     )
