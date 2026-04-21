@@ -192,21 +192,46 @@ async def process_message_job(
         response_text = _extract_response(result)
         tools_called = _extract_tools(result)
 
-        # ─── 4b. Verificar se o SalesAgent indicou transição para ContractAgent ─
-        # Lead em status 'interessado' com tool mark_lead_interested → ContractAgent
+        # ─── 4b. Decidir qual agente responde ─────────────────────────────
+        # O ContractAgent só assume quando o SalesAgent acabou de chamar
+        # mark_lead_interested/mark_lead_closed NESTA mensagem.
+        # Se o lead já era interessado antes, mas a tool não foi chamada agora,
+        # é o próprio ContractAgent que deve continuar o fluxo já iniciado.
         import re as _re
         _tools_str = " ".join(str(t) for t in tools_called)
-        _is_contract_phase = any(
+
+        # Tool foi chamada agora nesta rodada?
+        _sales_just_flagged = any(
             k in _tools_str for k in ["mark_lead_interested", "mark_lead_closed"]
-        ) or lead_profile.get("status") in ("interessado", "em_contrato")
+        )
+        # Lead já estava em fase de contrato antes desta mensagem?
+        _already_contract_phase = lead_profile.get("status") in ("interessado", "em_contrato")
+
+        _is_contract_phase = _sales_just_flagged or _already_contract_phase
 
         if _is_contract_phase:
-            # Roda o ContractAgent para resposta a esta mensagem
             from src.agents.contract.agent import create_contract_agent
+
+            # Monta contexto mínimo para o ContractAgent saber quem é o lead
+            _contract_ctx = (
+                f"## Contexto do Lead\n"
+                f"- Telefone: {phone}\n"
+                f"- Nome: {lead_profile.get('name') or 'Não informado'}\n"
+                f"- Plano de interesse: {lead_profile.get('interested_plan') or 'Não definido'}\n"
+                f"- Status: {lead_profile.get('status')}\n\n"
+                f"**Mensagem do lead:**\n{message.strip()}"
+            )
+
             def _run_contract():
                 ca = create_contract_agent(session_id=session_id, lead_phone=phone)
-                return ca.run(input=message, session_id=session_id, user_id=phone)
+                return ca.run(
+                    _contract_ctx,          # posicional — compatível com agno 1.2.6
+                    session_id=session_id,
+                    user_id=phone,
+                )
+
             try:
+                logger.info(f"📝 ContractAgent ativado | phase=contract | phone={phone}")
                 contract_result = await loop.run_in_executor(None, _run_contract)
                 contract_text = _extract_response(contract_result)
                 contract_tools = _extract_tools(contract_result)
@@ -215,17 +240,18 @@ async def process_message_job(
                 for t in contract_tools:
                     t_str = str(t)
                     if "generate_and_upload_contract" in t_str:
-                        # Extrair gcs_path do resultado da tool
-                        gcs_match = _re.search(r'gcs_path[^:]*:\s*[^g]*(gs://[^\s,}"]+)', t_str)
+                        gcs_match = _re.search(r'gs://[^\s,}"]+', t_str)
                         if gcs_match:
-                            contract_gcs_path = gcs_match.group(1)
+                            contract_gcs_path = gcs_match.group(0)
 
                 # Sobrescreve a resposta com a do ContractAgent
                 response_text = contract_text
                 agent_used = "contract_agent"
                 tools_called = contract_tools
+                logger.info(f"✅ ContractAgent respondeu | gcs={contract_gcs_path or 'pendente'}")
             except Exception as e_contract:
-                logger.warning(f"⚠️ ContractAgent error: {e_contract} — mantendo resposta do SalesAgent")
+                logger.error(f"❌ ContractAgent error: {e_contract}", exc_info=True)
+                logger.warning("⚠️ Mantendo resposta do SalesAgent após falha do ContractAgent")
 
         # ─── 5. Extrair tokens do resultado Agno ─────────────────────────
         input_tokens, output_tokens = _extract_tokens(result)
