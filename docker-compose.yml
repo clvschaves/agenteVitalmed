@@ -16,6 +16,9 @@ services:
       - DATABASE_URL_SYNC=postgresql://vitalmed:vitalmed123@postgres:5432/vitalmed_db
       - REDIS_URL=redis://redis:6379/0
       - LANGFUSE_HOST=http://langfuse:3000
+      # Usados pelo entrypoint.sh para aguardar o PostgreSQL
+      - PGHOST=postgres
+      - PGUSER=vitalmed
     volumes:
       - ./uploads:/app/uploads
       - ./src/memory/palace:/app/src/memory/palace
@@ -42,11 +45,16 @@ services:
       - DATABASE_URL_SYNC=postgresql://vitalmed:vitalmed123@postgres:5432/vitalmed_db
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
+      - PGHOST=postgres
+      - PGUSER=vitalmed
     volumes:
       - ./uploads:/app/uploads
       - ./docs:/app/docs
     depends_on:
-      - api
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     command: streamlit run tests/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
 
   # ─── PostgreSQL + pgvector ────────────────────────────────────────────────
