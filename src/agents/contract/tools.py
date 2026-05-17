@@ -349,8 +349,8 @@ def generate_and_upload_contract(
     file_bytes, ext = _md_to_pdf_bytes(md_content)
     filename = f"contrato_{contract_info['numero'].replace('/', '-')}.{ext}"
 
-    # ── 6. Upload GCS
-    gcs_path = upload_contract_to_gcs(
+    # ── 6. Upload GCS → retorna (gcs_path, signed_url)
+    gcs_path, signed_url = upload_contract_to_gcs(
         cpf=cpf_clean,
         filename=filename,
         content=file_bytes,
@@ -403,6 +403,7 @@ def generate_and_upload_contract(
         "success": True,
         "contract_id": contract_id,
         "gcs_path": gcs_path,
+        "signed_url": signed_url,          # URL HTTPS de download direto (7 dias)
         "filename": filename,
         "contract_number": contract_info["numero"],
         "format": ext,

@@ -11,6 +11,7 @@ from agno.models.google import Gemini
 
 from src.core.config import settings
 from src.agents.contract.tools import generate_and_upload_contract
+from src.agents.doubts.tools import search_knowledge_base  # guardrail: verificar preços/benefícios no RAG
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def create_contract_agent(session_id: str, lead_phone: str) -> Agent:
         name="contract_agent",
         model=Gemini(id=settings.gemini_flash_model, api_key=settings.google_api_key),
         instructions=instructions,
-        tools=[generate_and_upload_contract],
+        tools=[generate_and_upload_contract, search_knowledge_base],
         session_id=session_id,
         add_history_to_messages=True,
         num_history_responses=20,

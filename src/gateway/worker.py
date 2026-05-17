@@ -34,6 +34,7 @@ async def _send_to_n8n_webhook(
     chatwoot_contact_id: str | None = None,
     voice: bool = False,
     contract_gcs_path: str | None = None,
+    contract_download_url: str | None = None,
 ) -> None:
     """
     Envia a resposta do agente ao webhook n8n para que seja
@@ -56,6 +57,7 @@ async def _send_to_n8n_webhook(
         "chatwoot_contact_id": chatwoot_contact_id or "",
         "voice": voice,
         "contract_gcs_path": contract_gcs_path or "",
+        "contract_download_url": contract_download_url or "",  # URL HTTPS para download direto
         "sent_at": datetime.utcnow().isoformat(),
     }
 
@@ -63,7 +65,12 @@ async def _send_to_n8n_webhook(
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
-            logger.info(f"📤 Resposta enviada ao n8n | phone={phone} | status={resp.status_code}")
+            logger.info(
+                f"📤 Resposta enviada ao n8n | phone={phone} "
+                f"| contact_id={payload.get('chatwoot_contact_id')!r} "
+                f"| conv_id={payload.get('chatwoot_conversation_id')!r} "
+                f"| status={resp.status_code}"
+            )
     except Exception as e:
         logger.error(f"❌ Falha ao enviar para n8n webhook | phone={phone} | erro={e}")
 
@@ -106,6 +113,7 @@ async def process_message_job(
     rag_best_score = 0.0
     error_msg = None
     contract_gcs_path: str | None = None
+    contract_download_url: str | None = None  # Signed URL HTTPS para download
 
     try:
         # ─── 1. Buscar ou criar perfil do lead no DB ──────────────────────
@@ -253,18 +261,45 @@ async def process_message_job(
                 for t in contract_tools:
                     t_str = str(t)
                     if "generate_and_upload_contract" in t_str:
-                        gcs_match = _re.search(r'gs://[^\s,}"]+', t_str)
-                        if gcs_match:
-                            contract_gcs_path = gcs_match.group(0)
+                        # Tenta parsear JSON completo do resultado da tool
+                        try:
+                            import json as _json
+                            # O resultado da tool é um JSON string dentro do str(t)
+                            _json_match = _re.search(r'\{[^{}]+\}', t_str, _re.DOTALL)
+                            if _json_match:
+                                _tool_data = _json.loads(_json_match.group(0))
+                                contract_gcs_path = _tool_data.get("gcs_path") or contract_gcs_path
+                                contract_download_url = _tool_data.get("signed_url")
+                        except Exception:
+                            pass
+                        # Fallback: extrair gs:// via regex
+                        if not contract_gcs_path:
+                            gcs_match = _re.search(r'gs://[^\s,}"]+', t_str)
+                            if gcs_match:
+                                contract_gcs_path = gcs_match.group(0)
 
                 # Sobrescreve a resposta com a do ContractAgent
                 response_text = contract_text
                 agent_used = "contract_agent"
                 tools_called = contract_tools
-                logger.info(f"✅ ContractAgent respondeu | gcs={contract_gcs_path or 'pendente'}")
+                logger.info(f"✅ ContractAgent respondeu | gcs={contract_gcs_path or 'pendente'} | url={'sim' if contract_download_url else 'nao'}")
+
+                # ── Ação pós-contrato: tag na CONVERSA do Chatwoot via MCP ──
+                if contract_gcs_path:  # só tagueia se o contrato foi de fato gerado
+                    try:
+                        from src.integrations.mcp_chatwoot import add_conversation_label
+                        _cvid = chatwoot_conversation_id
+                        if _cvid:
+                            await add_conversation_label(_cvid, "contratos_gerados")
+                        else:
+                            logger.warning("⚠️ MCP tag ignorada: chatwoot_conversation_id ausente")
+                    except Exception as e_mcp:
+                        logger.error(f"❌ MCP tag falhou (não crítico): {e_mcp}")
+
             except Exception as e_contract:
                 logger.error(f"❌ ContractAgent error: {e_contract}", exc_info=True)
                 logger.warning("⚠️ Mantendo resposta do SalesAgent após falha do ContractAgent")
+
 
         # ─── 5. Extrair tokens do resultado Agno ─────────────────────────
         input_tokens, output_tokens = _extract_tokens(result)
@@ -349,6 +384,23 @@ async def process_message_job(
             f"📤 Enviando ao n8n | phone={phone} | "
             f"chatwoot_conversation_id={chatwoot_conversation_id!r}"
         )
+
+        # Prioridade: ID do request atual > ID salvo no banco
+        # Garante que o n8n receba sempre os IDs da requisição que está sendo respondida
+        _effective_contact_id = chatwoot_contact_id or lead_profile.get("chatwoot_contact_id")
+
+        # voice: reflete SEMPRE o valor recebido no request.
+        # Se o request enviou voice=True → devolve True (modo voz ativo agora).
+        # Se o request enviou voice=False → verifica o DB como confirmação
+        # (ex: lead historicamente voz mas request atual é texto → devolve False).
+        # O n8n usa esse campo para decidir como entregar a resposta (texto vs áudio).
+        _effective_voice = voice if voice else bool(lead_profile.get("voice", False))
+
+        logger.info(
+            f"📤 Enviando ao n8n | voice={_effective_voice} "
+            f"| contact_id={_effective_contact_id!r}"
+        )
+
         await _send_to_n8n_webhook(
             phone=phone,
             name=name,
@@ -357,9 +409,10 @@ async def process_message_job(
             agent_used=agent_used,
             job_id=job_id,
             chatwoot_conversation_id=chatwoot_conversation_id,
-            chatwoot_contact_id=lead_profile.get("chatwoot_contact_id") or chatwoot_contact_id,
-            voice=lead_profile.get("voice", False),
+            chatwoot_contact_id=_effective_contact_id,
+            voice=_effective_voice,
             contract_gcs_path=contract_gcs_path,
+            contract_download_url=contract_download_url,
         )
 
     except Exception as e:

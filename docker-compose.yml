@@ -23,6 +23,7 @@ services:
       - ./uploads:/app/uploads
       - ./src/memory/palace:/app/src/memory/palace
       - ./docs:/app/docs
+      - ./credentials:/app/credentials:ro   # GCS service account (read-only)
     depends_on:
       postgres:
         condition: service_healthy
