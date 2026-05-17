@@ -31,7 +31,6 @@ async def _send_to_n8n_webhook(
     agent_used: str,
     job_id: str,
     chatwoot_conversation_id: str | None = None,
-    chatwoot_contact_id: str | None = None,
     voice: bool = False,
     contract_gcs_path: str | None = None,
     contract_download_url: str | None = None,
@@ -54,7 +53,6 @@ async def _send_to_n8n_webhook(
         "agent_used": agent_used,
         "job_id": job_id,
         "chatwoot_conversation_id": chatwoot_conversation_id or "",
-        "chatwoot_contact_id": chatwoot_contact_id or "",
         "voice": voice,
         "contract_gcs_path": contract_gcs_path or "",
         "contract_download_url": contract_download_url or "",  # URL HTTPS para download direto
@@ -67,7 +65,6 @@ async def _send_to_n8n_webhook(
             resp.raise_for_status()
             logger.info(
                 f"📤 Resposta enviada ao n8n | phone={phone} "
-                f"| contact_id={payload.get('chatwoot_contact_id')!r} "
                 f"| conv_id={payload.get('chatwoot_conversation_id')!r} "
                 f"| status={resp.status_code}"
             )
@@ -85,7 +82,6 @@ async def process_message_job(
     age: int | None = None,
     source: str | None = "botpress",
     chatwoot_conversation_id: str | None = None,
-    chatwoot_contact_id: str | None = None,
     voice: bool = False,
 ) -> None:
     """
@@ -119,7 +115,7 @@ async def process_message_job(
         # ─── 1. Buscar ou criar perfil do lead no DB ──────────────────────
         lead_profile = await _get_or_create_lead(
             phone=phone, name=name, email=email, age=age, source=source,
-            chatwoot_contact_id=chatwoot_contact_id,
+            chatwoot_conversation_id=chatwoot_conversation_id,
             voice=voice,
         )
 
@@ -409,19 +405,15 @@ async def process_message_job(
         )
 
         # Prioridade: ID do request atual > ID salvo no banco
-        # Garante que o n8n receba sempre os IDs da requisição que está sendo respondida
-        _effective_contact_id = chatwoot_contact_id or lead_profile.get("chatwoot_contact_id")
+        # chatwoot_conversation_id é o identificador correto para taguear e entregar resposta
+        _effective_conv_id = chatwoot_conversation_id or lead_profile.get("chatwoot_conversation_id")
 
         # voice: reflete SEMPRE o valor recebido no request.
-        # Se o request enviou voice=True → devolve True (modo voz ativo agora).
-        # Se o request enviou voice=False → verifica o DB como confirmação
-        # (ex: lead historicamente voz mas request atual é texto → devolve False).
-        # O n8n usa esse campo para decidir como entregar a resposta (texto vs áudio).
         _effective_voice = voice if voice else bool(lead_profile.get("voice", False))
 
         logger.info(
             f"📤 Enviando ao n8n | voice={_effective_voice} "
-            f"| contact_id={_effective_contact_id!r}"
+            f"| conv_id={_effective_conv_id!r}"
         )
 
         await _send_to_n8n_webhook(
@@ -431,8 +423,7 @@ async def process_message_job(
             agent_response=response_text,
             agent_used=agent_used,
             job_id=job_id,
-            chatwoot_conversation_id=chatwoot_conversation_id,
-            chatwoot_contact_id=_effective_contact_id,
+            chatwoot_conversation_id=_effective_conv_id,
             voice=_effective_voice,
             contract_gcs_path=contract_gcs_path,
             contract_download_url=contract_download_url,
@@ -632,7 +623,7 @@ async def _get_or_create_lead(
     email: str | None,
     age: int | None,
     source: str | None,
-    chatwoot_contact_id: str | None = None,
+    chatwoot_conversation_id: str | None = None,
     voice: bool = False,
 ) -> dict:
     """Busca lead existente ou cria novo registro no banco."""
@@ -655,7 +646,7 @@ async def _get_or_create_lead(
                 source=source,
                 status=LeadStatus.EM_ATENDIMENTO,
                 last_contact_at=datetime.utcnow(),
-                chatwoot_contact_id=chatwoot_contact_id,
+                chatwoot_conversation_id=chatwoot_conversation_id,
                 voice=voice,
             )
             db.add(lead)
@@ -667,8 +658,9 @@ async def _get_or_create_lead(
                 lead.email = email
             if age and not lead.age:
                 lead.age = age
-            if chatwoot_contact_id and not lead.chatwoot_contact_id:
-                lead.chatwoot_contact_id = chatwoot_contact_id
+            # Sempre atualiza o conversation_id — pode mudar a cada nova conversa
+            if chatwoot_conversation_id:
+                lead.chatwoot_conversation_id = chatwoot_conversation_id
             # voice: uma vez ativado (True) nunca volta para False
             if voice and not lead.voice:
                 lead.voice = True
@@ -687,7 +679,7 @@ async def _get_or_create_lead(
             "status": lead.status,
             "interested_plan": lead.interested_plan,
             "source": lead.source,
-            "chatwoot_contact_id": lead.chatwoot_contact_id,
+            "chatwoot_conversation_id": lead.chatwoot_conversation_id,
             "voice": bool(lead.voice),
         }
 

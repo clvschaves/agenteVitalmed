@@ -27,8 +27,7 @@ class IncomingMessage(BaseModel):
     age: int | None = None
     message: str                    # Texto da mensagem do lead
     source: str | None = "botpress" # Origem do lead
-    chatwoot_conversation_id: str | None = None  # ID da conversa no Chatwoot
-    chatwoot_contact_id: str | None = None       # ID do contato no Chatwoot
+    chatwoot_conversation_id: str | None = None  # ID da conversa no Chatwoot (principal)
     voice: bool = False                          # True = canal voz ativo
 
 
@@ -85,7 +84,6 @@ async def receive_message(
         message=payload.message,
         source=payload.source,
         chatwoot_conversation_id=payload.chatwoot_conversation_id,
-        chatwoot_contact_id=payload.chatwoot_contact_id,
         voice=payload.voice,
     )
 

@@ -35,7 +35,7 @@ class Lead(Base):
     status = Column(String(30), nullable=False, default="novo", index=True)
     source = Column(String(50))                  # ex: "campanha_abril_2026"
     interested_plan = Column(String(100))        # plano de interesse detectado
-    chatwoot_contact_id = Column(String(50))     # ID do contato no Chatwoot
+    chatwoot_conversation_id = Column(String(50))  # ID da conversa no Chatwoot
     voice = Column(Boolean, default=False, nullable=False, server_default="false")  # canal voz
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
