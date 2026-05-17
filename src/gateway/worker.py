@@ -305,13 +305,15 @@ async def process_message_job(
                 if contract_gcs_path or _contract_tool_called:
                     try:
                         from src.integrations.mcp_chatwoot import add_conversation_label
+                        # SEMPRE usa o conv_id do request atual — nunca fallback do DB
+                        # Cada sessão nova tem um conversation_id diferente no Chatwoot
                         _cvid = chatwoot_conversation_id
                         if _cvid:
                             logger.info(f"🏷️ MCP: adicionando tag 'contratos_gerados' na conversa {_cvid!r}")
                             _tag_ok = await add_conversation_label(_cvid, "contratos_gerados")
                             logger.info(f"🏷️ MCP tag resultado: {_tag_ok}")
                         else:
-                            logger.warning("⚠️ MCP tag ignorada: chatwoot_conversation_id ausente no request")
+                            logger.warning("⚠️ MCP tag ignorada: chatwoot_conversation_id ausente no payload do request")
                     except Exception as e_mcp:
                         logger.error(f"❌ MCP tag falhou (não crítico): {e_mcp}", exc_info=True)
 
@@ -404,9 +406,10 @@ async def process_message_job(
             f"chatwoot_conversation_id={chatwoot_conversation_id!r}"
         )
 
-        # Prioridade: ID do request atual > ID salvo no banco
-        # chatwoot_conversation_id é o identificador correto para taguear e entregar resposta
-        _effective_conv_id = chatwoot_conversation_id or lead_profile.get("chatwoot_conversation_id")
+        # Usa SEMPRE o chatwoot_conversation_id que veio no request atual.
+        # Não usamos fallback do DB pois cada nova sessão tem um conversation_id diferente.
+        # O N8N é responsável por sempre enviar o ID correto da conversa ativa.
+        _effective_conv_id = chatwoot_conversation_id
 
         # voice: reflete SEMPRE o valor recebido no request.
         _effective_voice = voice if voice else bool(lead_profile.get("voice", False))
