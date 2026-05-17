@@ -261,22 +261,31 @@ async def process_message_job(
                 for t in contract_tools:
                     t_str = str(t)
                     if "generate_and_upload_contract" in t_str:
-                        # Tenta parsear JSON completo do resultado da tool
+                        import json as _json
+                        # Estratégia 1: extrair o campo 'content' que contém JSON serializado
                         try:
-                            import json as _json
-                            # O resultado da tool é um JSON string dentro do str(t)
-                            _json_match = _re.search(r'\{[^{}]+\}', t_str, _re.DOTALL)
-                            if _json_match:
-                                _tool_data = _json.loads(_json_match.group(0))
+                            _content_match = _re.search(r"'content':\s*'(\{.*?\})'", t_str, _re.DOTALL)
+                            if not _content_match:
+                                _content_match = _re.search(r'"content":\s*"(\{.*?\})"', t_str, _re.DOTALL)
+                            if _content_match:
+                                _inner = _content_match.group(1).encode().decode('unicode_escape')
+                                _tool_data = _json.loads(_inner)
                                 contract_gcs_path = _tool_data.get("gcs_path") or contract_gcs_path
-                                contract_download_url = _tool_data.get("signed_url")
+                                contract_download_url = _tool_data.get("signed_url") or contract_download_url
                         except Exception:
                             pass
-                        # Fallback: extrair gs:// via regex
+
+                        # Estratégia 2: gs:// diretamente na string (mais robusto)
                         if not contract_gcs_path:
-                            gcs_match = _re.search(r'gs://[^\s,}"]+', t_str)
+                            gcs_match = _re.search(r'gs://[^\s,}\'"\\]+', t_str)
                             if gcs_match:
                                 contract_gcs_path = gcs_match.group(0)
+
+                        # Estratégia 3: signed_url via https://storage.googleapis.com
+                        if not contract_download_url:
+                            url_match = _re.search(r'https://storage\.googleapis\.com/[^\s\'"\\]+', t_str)
+                            if url_match:
+                                contract_download_url = url_match.group(0).split("'")[0].split('"')[0]
 
                 # Sobrescreve a resposta com a do ContractAgent
                 response_text = contract_text
@@ -285,16 +294,30 @@ async def process_message_job(
                 logger.info(f"✅ ContractAgent respondeu | gcs={contract_gcs_path or 'pendente'} | url={'sim' if contract_download_url else 'nao'}")
 
                 # ── Ação pós-contrato: tag na CONVERSA do Chatwoot via MCP ──
-                if contract_gcs_path:  # só tagueia se o contrato foi de fato gerado
+                # Detecta se contrato foi gerado: (1) gcs_path extraído, ou
+                # (2) a tool generate_and_upload_contract foi chamada (sinal mais confiável)
+                _contract_tool_called = any(
+                    "generate_and_upload_contract" in str(t)
+                    for t in contract_tools
+                )
+                logger.info(
+                    f"📋 Pós-contrato | gcs_path={'sim' if contract_gcs_path else 'nao'} "
+                    f"| tool_called={_contract_tool_called} "
+                    f"| conv_id={chatwoot_conversation_id!r}"
+                )
+
+                if contract_gcs_path or _contract_tool_called:
                     try:
                         from src.integrations.mcp_chatwoot import add_conversation_label
                         _cvid = chatwoot_conversation_id
                         if _cvid:
-                            await add_conversation_label(_cvid, "contratos_gerados")
+                            logger.info(f"🏷️ MCP: adicionando tag 'contratos_gerados' na conversa {_cvid!r}")
+                            _tag_ok = await add_conversation_label(_cvid, "contratos_gerados")
+                            logger.info(f"🏷️ MCP tag resultado: {_tag_ok}")
                         else:
-                            logger.warning("⚠️ MCP tag ignorada: chatwoot_conversation_id ausente")
+                            logger.warning("⚠️ MCP tag ignorada: chatwoot_conversation_id ausente no request")
                     except Exception as e_mcp:
-                        logger.error(f"❌ MCP tag falhou (não crítico): {e_mcp}")
+                        logger.error(f"❌ MCP tag falhou (não crítico): {e_mcp}", exc_info=True)
 
             except Exception as e_contract:
                 logger.error(f"❌ ContractAgent error: {e_contract}", exc_info=True)
