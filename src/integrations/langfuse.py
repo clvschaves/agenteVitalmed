@@ -1,8 +1,6 @@
 from __future__ import annotations
 """
-Observabilidade com Langfuse v3.
-API: start_as_current_span / start_generation / update_current_trace
-
+Observabilidade com Langfuse v4.
 Rastreia por conversa:
   - Span completo (session_id / lead / latência)
   - Geração LLM (tokens input/output + custo USD)
@@ -27,7 +25,7 @@ GEMINI_PRICING: dict[str, dict[str, float]] = {
 
 @lru_cache(maxsize=1)
 def _get_lf():
-    """Singleton Langfuse v3."""
+    """Singleton Langfuse v4."""
     try:
         import langfuse as lf_module
         from src.core.config import settings
@@ -38,7 +36,7 @@ def _get_lf():
             host=settings.langfuse_host,
         )
         if client.auth_check():
-            logger.info("✅ Langfuse v3 conectado | %s", settings.langfuse_host)
+            logger.info("✅ Langfuse v4 conectado | %s", settings.langfuse_host)
             return client
         logger.warning("⚠️ Langfuse auth_check falhou")
         return None
@@ -59,7 +57,7 @@ def calc_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
 class ConversationTrace:
     """
-    Registra uma conversa completa no Langfuse v3.
+    Registra uma conversa completa no Langfuse v4.
 
     Uso:
         ct = ConversationTrace(session_id, phone, message, name)
@@ -88,21 +86,23 @@ class ConversationTrace:
         lf = _get_lf()
         if lf:
             try:
-                self._span_ctx = lf.start_as_current_span(
+                from langfuse.types import TraceContext
+                ctx: TraceContext = {
+                    "session_id": self.session_id,
+                    "user_id": self.lead_phone,
+                    "tags": ["vitalmed", "whatsapp"],
+                }
+                self._span_ctx = lf.start_as_current_observation(
+                    trace_context=ctx,
+                    as_type="agent",
                     name="conversa_vitalmed",
                     input=self.user_message,
-                )
-                self._span = self._span_ctx.__enter__()
-                # Anotar metadados na trace raiz
-                lf.update_current_trace(
-                    session_id=self.session_id,
-                    user_id=self.lead_phone,
-                    tags=["vitalmed", "whatsapp"],
                     metadata={
                         "lead_name": self.lead_name,
                         "lead_phone": self.lead_phone,
                     },
                 )
+                self._span = self._span_ctx.__enter__()
             except Exception as e:
                 logger.debug("Langfuse __enter__ error: %s", e)
         return self
@@ -126,11 +126,12 @@ class ConversationTrace:
 
         if lf and self._span:
             try:
-                # Registrar geração LLM (filho do span) — com usage_details e cost_details (API v3)
                 input_cost  = calc_cost(model, input_tokens, 0)
                 output_cost = calc_cost(model, 0, output_tokens)
 
-                with lf.start_as_current_generation(
+                # Geração LLM como filho do span principal (v4 API)
+                with lf.start_as_current_observation(
+                    as_type="generation",
                     name=f"llm_{agent_used}",
                     model=model,
                     input=self.user_message,
@@ -150,7 +151,7 @@ class ConversationTrace:
                         "rag_chunks":   rag_chunks,
                     },
                 ):
-                    pass   # dados já passados na criação
+                    pass
 
                 # Atualizar span principal com output e resultados
                 self._span.update(
@@ -168,19 +169,7 @@ class ConversationTrace:
                     },
                 )
 
-                # Atualizar trace raiz com output final
-                lf.update_current_trace(
-                    output=response,
-                    metadata={
-                        "cost_usd": round(cost_usd, 6),
-                        "latency_s": round(elapsed, 2),
-                        "agent_used": agent_used,
-                        "model": model,
-                        "error": error,
-                    },
-                )
-
-                # ─── Scores no trace (visíveis no dashboard Langfuse) ────────────
+                # Scores visíveis no dashboard (dentro do contexto do span)
                 if rag_best_score > 0:
                     lf.score_current_trace(
                         name="rag_relevance",
@@ -193,7 +182,7 @@ class ConversationTrace:
                     name="response_latency_s",
                     value=round(elapsed, 2),
                     data_type="NUMERIC",
-                    comment=f"Latência total da conversa em segundos",
+                    comment="Latência total da conversa em segundos",
                 )
 
                 lf.score_current_trace(
@@ -242,7 +231,6 @@ class ConversationTrace:
                     metadata={"error": error},
                     level="ERROR",
                 )
-                lf.update_current_trace(metadata={"error": error})
             except Exception:
                 pass
 
@@ -251,11 +239,14 @@ class ConversationTrace:
         lf = _get_lf()
         if lf:
             try:
-                with lf.start_as_current_span(name="rag_retrieval", input=query) as s:
-                    s.update(
-                        output=f"{chunks_found} chunks | score={best_score:.3f}",
-                        metadata={"chunks_found": chunks_found, "best_score": best_score},
-                    )
+                with lf.start_as_current_observation(
+                    as_type="retriever",
+                    name="rag_retrieval",
+                    input=query,
+                    output=f"{chunks_found} chunks | score={best_score:.3f}",
+                    metadata={"chunks_found": chunks_found, "best_score": best_score},
+                ):
+                    pass
             except Exception:
                 pass
 
@@ -275,21 +266,20 @@ def log_indexing(
     if not lf:
         return
     try:
-        with lf.start_as_current_span(name="doc_indexing", input=filename) as span:
-            span.update(
-                output=f"{chunks_saved} chunks de {pages} páginas",
-                metadata={
-                    "doc_type": doc_type,
-                    "chunks_saved": chunks_saved,
-                    "pages": pages,
-                    "ocr_used": ocr_used,
-                    "elapsed_s": round(elapsed_s, 2),
-                },
-            )
-            lf.update_current_trace(
-                session_id=f"indexing_{filename}",
-                tags=["vitalmed", "rag", "indexing"],
-            )
+        with lf.start_as_current_observation(
+            as_type="tool",
+            name="doc_indexing",
+            input=filename,
+            output=f"{chunks_saved} chunks de {pages} páginas",
+            metadata={
+                "doc_type": doc_type,
+                "chunks_saved": chunks_saved,
+                "pages": pages,
+                "ocr_used": ocr_used,
+                "elapsed_s": round(elapsed_s, 2),
+            },
+        ):
+            pass
         lf.flush()
         logger.info("📊 Langfuse indexing trace | %s | %d chunks", filename, chunks_saved)
     except Exception as e:
